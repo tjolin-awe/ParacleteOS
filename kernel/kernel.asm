@@ -6,23 +6,39 @@ jmp start
 %include "kernel/disk.asm"
 %include "kernel/shell.asm"
 
+; Constants
+DELAY_2S_CX  equ 0x001E     ; High word of 2 second delay
+DELAY_2S_DX  equ 0x8480     ; Low word of 2 second delay
+
 ; ─────────────────────────────────────────
 ; Kernel Entry Point
 ; ─────────────────────────────────────────
 start:
-    cli
-    mov [saved_drive], dl
-    xor ax, ax
-    mov ds, ax
-    mov es, ax
-    mov ss, ax
-    mov sp, 0x7000
-    sti
+    cli                       ; disables interrupts so nothing can interfere
+    mov [saved_drive], dl     ; writes the value in dl to the address of [saved_drive]. Booting drive set in boot loader
+    xor ax, ax                ; 0 out the accumulator high & low bytes
+    mov ds, ax                ; sets ds to 0 can only be done throught the accumulator
+    mov es, ax                ; sets es to 0 ...
+    mov ss, ax                ; sets ss to 0 ...
+    mov sp, 0x7000            ; sets the stack pointer to 0x7000
+    sti                       ; re-enables interrupts
 
-    call delay
-    call cls
+    
+    
+    ; Set cx & dx parameters to create 
+    ; a 2 second delay (2,000,000 microseconds)
+    mov cx, DELAY_2S_CX
+    mov dx, DELAY_2S_DX
 
-    mov si, msg_banner
+    call delay                ; jumps to the delay routine. calls write the return address to the stack, so ret knows where to return to
+    call cls                  ; jumps to clear screen routine
+
+    mov cx, DELAY_2S_CX
+    mov dx, DELAY_2S_DX
+    call delay 
+   
+    ; Setup msg banner
+    mov si, msg_banner        ; loads the si register with the starting address of the first byte of the banner data
     call print_string
     call print_bios_info
     mov si, msg_divider
@@ -31,14 +47,19 @@ start:
     jmp shell_start
 
 ; ── Library Functions ──
+
+; TODO: Break this into parts for seperation of concerns
+;       Method to Read the data. Method to print it
 print_bios_info:
-    push ax
+    ; preserve register values
+    push ax             
     push bx
     push cx
     push dx
-    mov si, msg_base_mem
-    call print_string
-    int 0x12
+
+    mov si, msg_base_mem            ; load si with the location of the start byte
+    call print_string               ; print the string
+    int 0x12                        ; interrupt 0x12 loads ax with amount of conventional memory
     call print_dec
     mov si, msg_kb
     call print_string
@@ -128,6 +149,7 @@ print_bios_info:
     ret
 
 print_dec:
+    ; preserve registers
     push ax
     push bx
     push cx
@@ -286,16 +308,25 @@ redraw_line:
     pop ax
     ret
 
+; Prints a string to the screen one character at a time
+; Routine expects the location of the the starting byte of a null terminated string 
+; is loaded into the si register. e.g: mov si, {label}
 print_string:
-    mov ah, 0x0E
-    mov bh, 0x00
+    push ax
+    push bx
+    push si
+    mov ah, 0x0E            ; sets teletype mode
+    mov bh, 0x00            ; sets screen page to visible screen display
 .ps_loop:
-    lodsb
-    test al, al
-    jz .ps_done
-    int 0x10
-    jmp .ps_loop
+    lodsb                   ; loads the next byte onto the low byte of ax register and increments the si register moving to the next char
+    test al, al             ; similiar to cmp but faster. Checks if al = 0, a.k.a checks for the the null terminated string char 
+    jz .ps_done             ; Jz checks the ZF (zero byte flag) to see if the test was 0. If so it knows it reached the end of the string and calls done
+    int 0x10                ; calls interrupt to print character
+    jmp .ps_loop            ; loops to next character because we haven't reached the null terminated char of the string
 .ps_done:
+    pop ax
+    pop bx
+    pop si
     ret
 
 putc:
@@ -304,52 +335,79 @@ putc:
     int 0x10
     ret
 
+
+; Adjusts the video mode 
+; Assumes that al low byte has already been set
+set_video_mode:
+    mov ah, 0x00        ; change video mode
+    int 0x10            ; call interrupt
+    ret 
+
+
+; Clear the screen by setting the ax register to 0x0003 word 
+; High Byte: 00 - means change video mode
+; Low  Byte: 03 - 80x25 color text mode which clears the screen 
+; Clobbers: ax
 cls:
-    mov ah, 0x00
-    mov al, 0x03
-    int 0x10
+    mov al, 0x03           ; set the word (high & low byte function code) into the accumulator
+    call set_video_mode
     ret
+
+; Delays execution for 2 seconds using BIOS INT 15h, AH=86h (Wait function)
+; Set the xc & dx 16-bit words to set the seconds 
 
 delay:
-    mov ah, 0x86
-    mov cx, 0x001E
-    mov dx, 0x8480
-    int 0x15
-    ret
+    push ax                 ; saves ax contents
+    mov ah, 0x86            ; BIOS wait function (134)
+    int 0x15                ; interrupt 15 to jump to BIOS function specified in ah (high byte of accumulator)
+    pop ax                  ; restores ax
+    ret                     ; returns to the calling line
 
 ; ── Kernel Data ──
-saved_drive         db 0
-current_dir_sector  dw 6
-cd_name_ptr         dw 0
+section .data
 
-msg_banner          db "==============================", 0x0D, 0x0A
-                    db "   ParacleteOS v0.1  Shell    ", 0x0D, 0x0A
-                    db "   Type HELP for commands     ", 0x0D, 0x0A
-                    db "==============================", 0x0D, 0x0A
-                    db 0x0D, 0x0A, 0
+    ; --- Runtime variables ---
+    saved_drive:        db 0
+    current_dir_sector: dw 6
+    cd_name_ptr:        dw 0
 
-msg_divider         db "------------------------------", 0x0D, 0x0A
-                    db 0x0D, 0x0A, 0
+    ; --- OS Init Strings ---
+    msg_banner:         db "==============================", 0x0D, 0x0A
+                        db "   ParacleteOS v0.1  Shell    ", 0x0D, 0x0A
+                        db "   Type HELP for commands     ", 0x0D, 0x0A
+                        db "==============================", 0x0D, 0x0A
+                        db 0x0D, 0x0A, 0
 
-msg_newline         db 0x0D, 0x0A, 0
-msg_disk_error      db "Disk error!", 0x0D, 0x0A, 0
-msg_base_mem        db "Base Memory   : ", 0
-msg_ext_mem         db "Ext Memory    : ", 0
-msg_kb              db " KB", 0x0D, 0x0A, 0
-msg_floppies        db "Floppy Drives : ", 0
-msg_video           db "Video Mode    : ", 0
-msg_boot_drive      db "Boot Drive    : ", 0
-msg_none            db "None", 0
-msg_vid_vga         db "VGA/EGA", 0x0D, 0x0A, 0
-msg_vid_cga40       db "CGA 40col", 0x0D, 0x0A, 0
-msg_vid_cga80       db "CGA 80col", 0x0D, 0x0A, 0
-msg_vid_mono        db "Monochrome", 0x0D, 0x0A, 0
-msg_floppy_drive    db "Floppy (A:)", 0x0D, 0x0A, 0
-msg_hdd_drive       db "Hard Disk (C:)", 0x0D, 0x0A, 0
-msg_unknown_drive   db "Unknown", 0x0D, 0x0A, 0
+    msg_divider:        db "------------------------------", 0x0D, 0x0A
+                        db 0x0D, 0x0A, 0
+
+    ; --- Error Messages ---
+    msg_newline:        db 0x0D, 0x0A, 0
+    msg_disk_error:     db "Disk error!", 0x0D, 0x0A, 0
+
+
+    ; --- System Info Labels ---
+    msg_base_mem:       db "Base Memory   : ", 0
+    msg_ext_mem:        db "Ext Memory    : ", 0
+    msg_kb:             db " KB", 0x0D, 0x0A, 0
+    msg_floppies:       db "Floppy Drives : ", 0
+    msg_video:          db "Video Mode    : ", 0
+    msg_boot_drive:     db "Boot Drive    : ", 0
+    msg_none:           db "None", 0
+
+    ; --- Video Mode Strings ---
+    msg_vid_vga:        db "VGA/EGA", 0x0D, 0x0A, 0
+    msg_vid_cga40:      db "CGA 40col", 0x0D, 0x0A, 0
+    msg_vid_cga80:      db "CGA 80col", 0x0D, 0x0A, 0
+    msg_vid_mono:       db "Monochrome", 0x0D, 0x0A, 0
+
+    ; --- Drive Strings ---
+    msg_floppy_drive:   db "Floppy (A:)", 0x0D, 0x0A, 0
+    msg_hdd_drive:      db "Hard Disk (C:)", 0x0D, 0x0A, 0
+    msg_unknown_drive:  db "Unknown", 0x0D, 0x0A, 0
 
 ; ── Shared Buffers ──
-input_buffer        times 128 db 0
-dir_buffer          times 512 db 0
+input_buffer:       times 128 db 0
+dir_buffer:         times 512 db 0
 
 times 4096 - ($ - $$) db 0

@@ -2,7 +2,7 @@ NASM = nasm
 QEMU = qemu-system-i386
 IMG  = os.img
 
-all: $(IMG)
+all: boot.bin kernel.bin $(IMG)
 	$(QEMU) -fda $(IMG)
 
 run:

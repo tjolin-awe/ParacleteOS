@@ -9,6 +9,20 @@
 ;   DOS 3.31 (1987) — Expanded to support disks larger than 32MB
 ;   DOS 4.0  (1988) — Added Extended Boot Record (EBR)
 ;   DOS 7.1  (1996) — Added FAT32 Extended BPB (Windows 95 OSR2)
+;
+; Memory Layout
+;
+;   Address	    Content	           
+;   -------     -------
+;   0x7DFF	    End of Bootloader	
+;   0x7C5A	    start: routine
+;   0x7C03	    Your BPB Data	
+;   0x7C00	    Start of Bootloader	
+;   0x7BFF  	Stack Start (SP)	<-- STACK GROWS DOWN NOT UP!!! 
+;   0x7BFE	    First byte of a PUSH	
+;   0x0500	    Bottom of safe RAM
+;
+;
 ; ═══════════════════════════════════════════════════════════════════
 
 [BITS 16]       ; Generate 16-bit machine code.
@@ -198,14 +212,14 @@ bpb_total_sectors_32    dd 20480
 ; release to support disks larger than 2GB (FAT16 limit).
 ; ═══════════════════════════════════════════════════════════════════
 
-bpb_fat_size_32         dd 32
+bpb_fat_size_32         dd 32 ; double word 32bit
                         ; [DOS 7.1 — offset 0x24 — 4 bytes]
                         ; Size of EACH FAT table in sectors (32-bit).
                         ; Replaces bpb_fat_size_16 which is 0 above.
                         ; 32 sectors x 512 bytes = 16384 bytes per FAT.
                         ; With 2 FATs = 64 sectors total for FAT tables.
 
-bpb_ext_flags           dw 0
+bpb_ext_flags           dw 0  ; word 16 bit
                         ; [DOS 7.1 — offset 0x28 — 2 bytes]
                         ; Controls FAT mirroring behavior.
                         ; 0x0000 = all FATs kept in sync (mirrored).
@@ -292,13 +306,12 @@ ebr_signature           db 0x29
                         ; Without this some OSes will ignore the
                         ; volume ID, label, and filesystem type.
 
-ebr_volume_id           dd 0xDEADBEEF
+ebr_volume_id           dd 0xAFAFAFAFAF
                         ; [DOS 4.0 — offset 0x43 — 4 bytes]
                         ; 32-bit pseudo-random volume serial number.
                         ; Generated at format time.
                         ; Windows uses this to track which drive
                         ; letter belongs to which volume.
-                        ; Replace 0xDEADBEEF with a real random
                         ; value when you format your disk image.
 
 ebr_volume_label        db "PCLETEOS   "
@@ -307,13 +320,11 @@ ebr_volume_label        db "PCLETEOS   "
                         ; Shown in Windows Explorer and Linux
                         ; file managers as the disk label.
                         ; Must be EXACTLY 11 bytes, space-padded.
-                        ; "PCLETEOS" = 8 chars + 3 spaces = 11. ✓
 
 ebr_fs_type             db "FAT32   "
                         ; [DOS 4.0 — offset 0x52 — 8 bytes]
                         ; Informational filesystem type string.
                         ; Must be EXACTLY 8 bytes, space-padded.
-                        ; "FAT32" = 5 chars + 3 spaces = 8. ✓
                         ; NOTE: The OS specification says this
                         ; field must NOT be used to detect the
                         ; filesystem type. Use the BPB fields
@@ -344,8 +355,6 @@ start:
                                 ; Real Mode address = (Segment x 16)
                                 ; + Offset. DS=0 means our data
                                 ; addresses are used as-is.
-                                ; Cannot load DS directly from an
-                                ; immediate — must go through AX.
 
     mov es, ax                  ; Extra Segment = 0.
                                 ; Used by string instructions like
